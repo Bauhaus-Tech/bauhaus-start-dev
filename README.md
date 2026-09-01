@@ -49,14 +49,17 @@ Run the script as an executable, never with `source`:
 ```
 
 `--repo` and at least one `--branch` are required. Repeat `--branch` to create
-multiple worktrees in a single run.
+multiple worktrees in a single run, or to select multiple worktrees/branches
+for removal.
 
 | Option | Description |
 | --- | --- |
 | `-r`, `--repo REPOSITORY` | Repository source. Accepts a GitHub `owner/repo` slug, a GitHub URL, another Git URL, or a local Git path. |
 | `-b`, `--branch BRANCH` | Branch to check out. If it exists remotely, it is checked out as a tracking branch; otherwise it is created from the repository's current `HEAD`. Repeat this option for each worktree. |
 | `-d`, `--directory DIR` | Parent directory where the repository workspace is created. Defaults to the current directory. |
-| `--create-repo` | Creates a missing GitHub repository. Only works with an `owner/repo` GitHub repository argument. It ensures a `main` worktree exists and sets `main` as the GitHub default branch. |
+| `--remove-local` | Removes each selected local worktree after confirmation. |
+| `--remove-remote` | Deletes each selected branch from `origin` after confirmation. |
+| `--create-repo` | Creates a missing GitHub repository. Only works with an `owner/repo` GitHub repository argument. It ensures a `main` worktree exists and sets `main` as the GitHub default branch. Cannot be combined with a removal option. |
 | `--public` | Makes a repository created with `--create-repo` public. |
 | `--private` | Makes a repository created with `--create-repo` private. This is the default. |
 | `--https` | Uses HTTPS for a GitHub slug; HTTPS is already the default. |
@@ -129,6 +132,25 @@ Add `--public` to make the newly created repository public:
   -b feat-101
 ```
 
+### Remove worktrees and branches
+
+Use `--remove-local` to remove the selected local worktree,
+`--remove-remote` to delete its branch from `origin`, or combine both. The tool
+asks for confirmation before every local and remote operation; press `y` (or
+type `yes`) to proceed. Any other input, including end-of-file, keeps that
+item.
+
+```bash
+# Remove only the local feat-101 worktree.
+./bauhaus-start-dev -r Bauhaus-Tech/minha-app -b feat-101 --remove-local
+
+# Delete the remote branch, while keeping its local worktree.
+./bauhaus-start-dev -r Bauhaus-Tech/minha-app -b feat-101 --remove-remote
+
+# Remove both, confirming each operation separately.
+./bauhaus-start-dev -r Bauhaus-Tech/minha-app -b feat-101 --remove-local --remove-remote
+```
+
 ## Behavior and safety
 
 - Running the same command again reuses registered worktrees, so it is safe to
@@ -140,6 +162,9 @@ Add `--public` to make the newly created repository public:
   `origin/<branch>`; missing branches are created from `HEAD`.
 - A repository must have at least one commit before a new branch can be
   created. `--create-repo` creates an initial commit for this reason.
+- Removal operates only on an existing managed workspace. Local removal uses
+  `git worktree remove` without forcing, so Git refuses to remove a worktree
+  with uncommitted changes.
 
 ## Test
 
