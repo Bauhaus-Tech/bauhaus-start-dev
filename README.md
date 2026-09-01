@@ -81,6 +81,29 @@ Create the same workspace below a chosen parent directory:
   --directory ~/workspace
 ```
 
+### Add a worktree to an existing workspace
+
+To add a branch after the workspace has already been created, run the tool from
+the workspace's parent directory and provide the same repository name. For
+example, from the directory that contains the existing `bauhaus-start-dev/`
+workspace:
+
+```bash
+bauhaus-start-dev -r Bauhaus-Tech/bauhaus-start-dev -b feat-002
+```
+
+This creates or checks out `bauhaus-start-dev/feat-002/` while reusing the
+existing `bauhaus-start-dev/.bare/` repository. Do not run this command from
+inside `bauhaus-start-dev/`; either change to its parent directory or pass that
+parent explicitly with `--directory`.
+
+```bash
+bauhaus-start-dev \
+  -r Bauhaus-Tech/bauhaus-start-dev \
+  -b feat-002 \
+  --directory /path/to/the/workspace-parent
+```
+
 Use a local bare repository or another local Git source instead of GitHub:
 
 ```bash
