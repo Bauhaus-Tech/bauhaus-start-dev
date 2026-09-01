@@ -15,6 +15,8 @@ Options:
   -r, --repo REPOSITORY  GitHub slug/URL, another Git URL, or a local Git path.
   -b, --branch BRANCH   Branch to check out or create; repeatable.
   -d, --directory DIR   Parent directory for the new workspace (default: .).
+      --remove-local    Remove the selected local worktree(s).
+      --remove-remote   Delete the selected remote branch(es).
       --create-repo     Create a missing GitHub repository.
       --public          Make a newly created GitHub repository public.
       --private         Make a newly created GitHub repository private (default).
@@ -24,6 +26,7 @@ Options:
 Examples:
   $PROGRAM_NAME -r Bauhaus-Tech/minha-app -b main -b feat-101
   $PROGRAM_NAME -r Bauhaus-Tech/minha-app --create-repo -b feat-101
+  $PROGRAM_NAME -r Bauhaus-Tech/minha-app -b feat-101 --remove-local --remove-remote
 EOF
 }
 
@@ -152,6 +155,44 @@ ensure_worktree() {
     mkdir -p "$target/.local-dev"
 }
 
+confirm_removal() {
+    local description="$1"
+    local answer
+
+    printf 'Remove %s? [y/N] ' "$description" >&2
+    read -r answer || answer=""
+    [[ "$answer" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
+remove_worktree() {
+    local bare_dir="$1"
+    local project_dir="$2"
+    local branch="$3"
+    local target="$project_dir/$branch"
+
+    worktree_is_registered "$bare_dir" "$target" ||
+        { die "local worktree '$target' is not registered"; return; }
+
+    if confirm_removal "local worktree '$branch' at '$target'"; then
+        git -C "$bare_dir" worktree remove "$target"
+        printf '[+] Removed local worktree %s.\n' "$branch"
+    else
+        printf '[!] Kept local worktree %s.\n' "$branch"
+    fi
+}
+
+remove_remote_branch() {
+    local bare_dir="$1"
+    local branch="$2"
+
+    if confirm_removal "remote branch '$branch'"; then
+        git -C "$bare_dir" push origin --delete "$branch"
+        printf '[+] Removed remote branch %s.\n' "$branch"
+    else
+        printf '[!] Kept remote branch %s.\n' "$branch"
+    fi
+}
+
 main() {
     local repository=""
     local base_dir="$(pwd -P)"
@@ -160,6 +201,8 @@ main() {
 
     CREATE_REPO=false
     CREATED_GITHUB_REPOSITORY=false
+    REMOVE_LOCAL=false
+    REMOVE_REMOTE=false
     USE_HTTPS=false
     VISIBILITY=private
 
@@ -175,6 +218,8 @@ main() {
             -d|--directory)
                 (($# >= 2)) || { usage >&2; die "option '$1' requires an argument"; return; }
                 base_dir="$2"; shift 2 ;;
+            --remove-local) REMOVE_LOCAL=true; shift ;;
+            --remove-remote) REMOVE_REMOTE=true; shift ;;
             --create-repo) CREATE_REPO=true; shift ;;
             --public) VISIBILITY=public; shift ;;
             --private) VISIBILITY=private; shift ;;
@@ -189,6 +234,11 @@ main() {
     require_command git || return
     parse_repository "$repository" || return
 
+    if [[ "$CREATE_REPO" == true && ( "$REMOVE_LOCAL" == true || "$REMOVE_REMOTE" == true ) ]]; then
+        die "--create-repo cannot be used with removal options"
+        return
+    fi
+
     if [[ "$CREATE_REPO" == true ]]; then
         [[ -n "$GITHUB_SLUG" ]] ||
             { die "--create-repo only accepts a GitHub owner/repository"; return; }
@@ -202,6 +252,25 @@ main() {
     base_dir="$(cd "$base_dir" && pwd -P)"
     project_dir="$base_dir/$PROJECT_NAME"
     bare_dir="$project_dir/.bare"
+
+    if [[ "$REMOVE_LOCAL" == true || "$REMOVE_REMOTE" == true ]]; then
+        [[ -d "$bare_dir" ]] || {
+            die "managed workspace '$project_dir' does not exist"
+            return
+        }
+        git -C "$bare_dir" rev-parse --is-bare-repository >/dev/null 2>&1 || {
+            die "'$bare_dir' is not a bare Git repository"
+            return
+        }
+
+        for branch in "${branches[@]}"; do
+            [[ "$REMOVE_LOCAL" == true ]] && remove_worktree "$bare_dir" "$project_dir" "$branch"
+            [[ "$REMOVE_REMOTE" == true ]] && remove_remote_branch "$bare_dir" "$branch"
+        done
+
+        printf '[✔] Requested removals finished for %s\n' "$project_dir"
+        return
+    fi
 
     if [[ -e "$project_dir" && ! -d "$bare_dir" ]]; then
         die "project directory '$project_dir' exists but has no .bare; refusing to alter it"
