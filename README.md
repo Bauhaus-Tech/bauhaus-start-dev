@@ -67,12 +67,16 @@ for removal.
 
 ## Examples
 
+### Create worktrees in the current directory
+
 Create worktrees for the existing `main` and `feat-101` branches in the
 current directory:
 
 ```bash
 ./bauhaus-start-dev -r Bauhaus-Tech/minha-app -b main -b feat-101
 ```
+
+### Create worktrees in a chosen directory
 
 Create the same workspace below a chosen parent directory:
 
@@ -107,11 +111,15 @@ bauhaus-start-dev \
   --directory /path/to/the/workspace-parent
 ```
 
+### Use a local Git source
+
 Use a local bare repository or another local Git source instead of GitHub:
 
 ```bash
 ./bauhaus-start-dev --repo /path/to/minha-app.git --branch main
 ```
+
+### Create a private GitHub repository
 
 Create a missing private GitHub repository and add a feature worktree. The
 tool adds `main` automatically because a newly created repository needs a
@@ -121,6 +129,8 @@ default branch:
 gh auth login
 ./bauhaus-start-dev -r Bauhaus-Tech/minha-app --create-repo -b feat-101
 ```
+
+### Create a public GitHub repository
 
 Add `--public` to make the newly created repository public:
 
