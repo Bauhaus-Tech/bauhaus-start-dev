@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+#
+# Creates a bare Git repository and one linked worktree per requested branch.
+
+set -Eeuo pipefail
+
+PROGRAM_NAME="bauhaus-start-dev"
+
+usage() {
+    cat <<EOF
+Usage: $PROGRAM_NAME -r <owner/repo|github-url|git-url|local-path> -b <branch> [options]
+
+Options:
+  -r, --repo REPOSITORY  GitHub slug/URL, another Git URL, or a local Git path.
+  -b, --branch BRANCH   Branch to check out or create; repeatable.
+  -d, --directory DIR   Parent directory for the new workspace (default: .).
+      --create-repo     Create a missing GitHub repository.
+      --public          Make a newly created GitHub repository public.
+      --private         Make a newly created GitHub repository private (default).
+      --https           Use HTTPS for a GitHub slug (the default).
+  -h, --help            Show this help.
+
+Examples:
+  $PROGRAM_NAME -r Bauhaus-Tech/minha-app -b main -b feat-101
+  $PROGRAM_NAME -r Bauhaus-Tech/minha-app --create-repo -b feat-101
+EOF
+}
+
+die() {
+    printf 'Error: %s\n' "$*" >&2
+    return 1
+}
+
+validate_branch() {
+    local branch="$1"
+    if [[ "$branch" == *'..'* || "$branch" == /* || "$branch" == */ || "$branch" == *//* ]] ||
+       ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+        die "invalid branch name '$branch'"
+        return
+    fi
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command '$1' was not found in PATH"
+}
+
+# Sets REPO_URL, PROJECT_NAME, and GITHUB_SLUG (the latter only for GitHub).
+parse_repository() {
+    local value="$1"
+    local normalized
+    GITHUB_SLUG=""
+
+    if [[ "$value" =~ ^([[:alnum:]_.-]+)/([[:alnum:]_.-]+)$ ]]; then
+        GITHUB_SLUG="$value"
+        PROJECT_NAME="${BASH_REMATCH[2]}"
+        # HTTPS works with `gh auth setup-git` and does not require an SSH key.
+        # An explicitly supplied git@github.com URL is still left untouched.
+        REPO_URL="https://github.com/${GITHUB_SLUG}.git"
+        return
+    fi
+
+    if [[ "$value" =~ ^https://github\.com/([[:alnum:]_.-]+)/([[:alnum:]_.-]+)(\.git)?$ ]] ||
+       [[ "$value" =~ ^git@github\.com:([[:alnum:]_.-]+)/([[:alnum:]_.-]+)(\.git)?$ ]] ||
+       [[ "$value" =~ ^ssh://git@github\.com/([[:alnum:]_.-]+)/([[:alnum:]_.-]+)(\.git)?$ ]]; then
+        GITHUB_SLUG="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+        PROJECT_NAME="${BASH_REMATCH[2]}"
+        REPO_URL="$value"
+        return
+    fi
+
+    # Paths/non-GitHub URLs are useful for private servers and isolated tests.
+    if [[ "$value" == /* || "$value" == ./* || "$value" == ../* ||
+          "$value" == file://* || "$value" == *://* || "$value" == *:* ]]; then
+        normalized="${value%/}"
+        normalized="${normalized%.git}"
+        PROJECT_NAME="${normalized##*/}"
+        [[ -n "$PROJECT_NAME" && "$PROJECT_NAME" != "." ]] ||
+            { die "cannot determine a project name from '$value'"; return; }
+        REPO_URL="$value"
+        return
+    fi
+
+    die "invalid repository '$value'; use owner/repo, a GitHub URL, or a Git URL/path"
+}
+
+create_github_repository_if_missing() {
+    require_command gh || return
+    gh auth status >/dev/null 2>&1 ||
+        { die "GitHub CLI is not authenticated; run 'gh auth login' first"; return; }
+
+    if gh repo view "$GITHUB_SLUG" >/dev/null 2>&1; then
+        printf '[!] GitHub repository %s already exists; using it.\n' "$GITHUB_SLUG"
+        return
+    fi
+
+    printf '[+] Creating %s GitHub repository %s...\n' "$VISIBILITY" "$GITHUB_SLUG"
+    # --add-readme guarantees an initial commit, so feature branches can be
+    # created immediately after the bare clone.
+    gh repo create "$GITHUB_SLUG" "--$VISIBILITY" --add-readme
+    CREATED_GITHUB_REPOSITORY=true
+}
+
+ensure_exclude_rule() {
+    local exclude_file="$1/info/exclude"
+    mkdir -p "${exclude_file%/*}"
+    touch "$exclude_file"
+    grep -Fxq '.local-dev/' "$exclude_file" || printf '.local-dev/\n' >>"$exclude_file"
+}
+
+clone_bare_repository() {
+    local bare_dir="$1"
+
+    # Let the GitHub CLI supply its authenticated HTTPS credentials when it is
+    # available.  This also avoids assuming that the user has configured SSH.
+    if [[ -n "$GITHUB_SLUG" && "$REPO_URL" == https://github.com/* ]] &&
+       command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        gh repo clone "$REPO_URL" "$bare_dir" --no-upstream -- --bare
+    else
+        git clone --bare "$REPO_URL" "$bare_dir"
+    fi
+}
+
+worktree_is_registered() {
+    local bare_dir="$1"
+    local target="$2"
+    local absolute_target
+    absolute_target="$(cd "$target" && pwd -P)"
+    git -C "$bare_dir" worktree list --porcelain | grep -Fxq "worktree $absolute_target"
+}
+
+ensure_worktree() {
+    local bare_dir="$1"
+    local project_dir="$2"
+    local branch="$3"
+    local target="$project_dir/$branch"
+
+    if [[ -e "$target" ]]; then
+        worktree_is_registered "$bare_dir" "$target" ||
+            { die "'$target' exists but is not a managed worktree"; return; }
+        printf '[!] Worktree %s already exists; reusing it.\n' "$branch"
+    elif git -C "$bare_dir" show-ref --verify --quiet "refs/heads/$branch"; then
+        git -C "$bare_dir" worktree add "$target" "$branch"
+    elif git -C "$bare_dir" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        git -C "$bare_dir" worktree add --track -b "$branch" "$target" "origin/$branch"
+    else
+        git -C "$bare_dir" rev-parse --verify --quiet HEAD^{commit} >/dev/null ||
+            { die "repository has no commit; initialize it first or use --create-repo"; return; }
+        git -C "$bare_dir" worktree add -b "$branch" "$target" HEAD
+    fi
+
+    mkdir -p "$target/.local-dev"
+}
+
+main() {
+    local repository=""
+    local base_dir="$(pwd -P)"
+    local project_dir bare_dir branch
+    local -a branches=()
+
+    CREATE_REPO=false
+    CREATED_GITHUB_REPOSITORY=false
+    USE_HTTPS=false
+    VISIBILITY=private
+
+    while (($#)); do
+        case "$1" in
+            -r|--repo)
+                (($# >= 2)) || { usage >&2; die "option '$1' requires an argument"; return; }
+                repository="$2"; shift 2 ;;
+            -b|--branch)
+                (($# >= 2)) || { usage >&2; die "option '$1' requires an argument"; return; }
+                validate_branch "$2" || return
+                branches+=("$2"); shift 2 ;;
+            -d|--directory)
+                (($# >= 2)) || { usage >&2; die "option '$1' requires an argument"; return; }
+                base_dir="$2"; shift 2 ;;
+            --create-repo) CREATE_REPO=true; shift ;;
+            --public) VISIBILITY=public; shift ;;
+            --private) VISIBILITY=private; shift ;;
+            --https) USE_HTTPS=true; shift ;;
+            -h|--help) usage; return 0 ;;
+            *) usage >&2; die "unknown option '$1'"; return ;;
+        esac
+    done
+
+    [[ -n "$repository" ]] || { usage >&2; die "--repo is required"; return; }
+    ((${#branches[@]})) || { usage >&2; die "at least one --branch is required"; return; }
+    require_command git || return
+    parse_repository "$repository" || return
+
+    if [[ "$CREATE_REPO" == true ]]; then
+        [[ -n "$GITHUB_SLUG" ]] ||
+            { die "--create-repo only accepts a GitHub owner/repository"; return; }
+        # A newly-created repository must expose main even if the user's GitHub
+        # account has a different default initial branch.
+        [[ " ${branches[*]} " == *" main "* ]] || branches=(main "${branches[@]}")
+        create_github_repository_if_missing || return
+    fi
+
+    mkdir -p "$base_dir"
+    base_dir="$(cd "$base_dir" && pwd -P)"
+    project_dir="$base_dir/$PROJECT_NAME"
+    bare_dir="$project_dir/.bare"
+
+    if [[ -e "$project_dir" && ! -d "$bare_dir" ]]; then
+        die "project directory '$project_dir' exists but has no .bare; refusing to alter it"
+        return
+    fi
+    mkdir -p "$project_dir"
+
+    if [[ ! -d "$bare_dir" ]]; then
+        printf '[+] Cloning bare repository from %s...\n' "$REPO_URL"
+        clone_bare_repository "$bare_dir"
+    elif ! git -C "$bare_dir" rev-parse --is-bare-repository >/dev/null 2>&1; then
+        die "'$bare_dir' is not a bare Git repository"
+        return
+    fi
+
+    git -C "$bare_dir" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+    git -C "$bare_dir" fetch origin --prune
+    ensure_exclude_rule "$bare_dir"
+
+    for branch in "${branches[@]}"; do
+        printf '[+] Setting up worktree for %s...\n' "$branch"
+        ensure_worktree "$bare_dir" "$project_dir" "$branch" || return
+    done
+
+    if [[ "$CREATED_GITHUB_REPOSITORY" == true ]]; then
+        git -C "$project_dir/main" push --set-upstream origin main
+        gh repo edit "$GITHUB_SLUG" --default-branch main
+        printf '[+] Set main as the GitHub default branch.\n'
+    fi
+
+    printf '[✔] Workspace ready at %s\n' "$project_dir"
+}
+
+# A sourced script must not terminate the caller's interactive shell.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    printf 'Run %s as an executable; do not source it.\n' "$PROGRAM_NAME" >&2
+    return 0
+fi
+
+main "$@"
