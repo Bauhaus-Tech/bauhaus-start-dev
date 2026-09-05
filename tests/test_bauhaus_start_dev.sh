@@ -16,6 +16,7 @@ assert_file_line() { grep -Fxq "$2" "$1" || fail "expected '$2' in '$1'"; }
 assert_output() { [[ "$1" == *"$2"* ]] || fail "expected output to contain '$2'"; }
 assert_remote_branch() { git --git-dir="$REMOTE" show-ref --verify --quiet "refs/heads/$1" || fail "expected remote branch '$1'"; }
 assert_no_remote_branch() { ! git --git-dir="$REMOTE" show-ref --verify --quiet "refs/heads/$1" || fail "did not expect remote branch '$1'"; }
+assert_upstream() { [[ "$(git -C "$1" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" == "$2" ]] || fail "expected '$1' to track '$2'"; }
 
 REMOTE="$TEST_DIR/upstream.git"
 SEED="$TEST_DIR/seed"
@@ -41,6 +42,7 @@ assert_dir "$PROJECT/.bare"
 assert_dir "$PROJECT/main/.local-dev"
 assert_dir "$PROJECT/feat-101/.local-dev"
 assert_file_line "$PROJECT/.bare/info/exclude" '.local-dev/'
+assert_upstream "$PROJECT/main" origin/main
 [[ "$(git -C "$PROJECT/feat-101" branch --show-current)" == feat-101 ]] || fail 'feature branch was not checked out'
 [[ "$(git -C "$PROJECT/feat-101" status --porcelain)" == '' ]] || fail '.local-dev should be ignored'
 git -C "$PROJECT/feat-101" push --set-upstream origin feat-101 >/dev/null
